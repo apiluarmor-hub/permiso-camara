@@ -1,15 +1,15 @@
 // api/send.js
-// Esta función corre en el servidor de Vercel. Aquí SÍ puede estar el webhook,
-// porque el usuario nunca ve el código del servidor.
-
 export const config = {
   api: {
-    bodyParser: false, // Necesario para manejar multipart/form-data (archivos)
+    bodyParser: false,
   },
 };
 
 export default async function handler(req, res) {
-  // Solo POST
+  console.log('=== /api/send llamado ===');
+  console.log('Método:', req.method);
+  console.log('Content-Type:', req.headers['content-type']);
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -17,22 +17,23 @@ export default async function handler(req, res) {
   const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
   if (!WEBHOOK_URL) {
-    console.error('DISCORD_WEBHOOK_URL no está configurada');
+    console.error('❌ DISCORD_WEBHOOK_URL no está configurada');
     return res.status(500).json({ error: 'Webhook no configurado' });
   }
 
+  console.log('✅ Webhook configurado, longitud:', WEBHOOK_URL.length);
+
   try {
-    // Leer el cuerpo multipart/form-data que envía el frontend
-    // Vercel nos da el body crudo, tenemos que reenviarlo tal cual.
     const chunks = [];
     for await (const chunk of req) {
       chunks.push(chunk);
     }
     const bodyBuffer = Buffer.concat(chunks);
 
+    console.log('Tamaño del body recibido:', bodyBuffer.length, 'bytes');
+
     const contentType = req.headers['content-type'] || '';
 
-    // Reenviar a Discord con el mismo content-type (multipart/form-data)
     const discordRes = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: {
@@ -45,14 +46,15 @@ export default async function handler(req, res) {
 
     if (!discordRes.ok) {
       const errText = await discordRes.text();
-      console.error('Error de Discord:', discordRes.status, errText);
-      return res.status(discordRes.status).json({ error: 'Discord rechazó la solicitud' });
+      console.error('❌ Error de Discord:', discordRes.status, errText);
+      return res.status(discordRes.status).json({ error: 'Discord rechazó la solicitud', detalle: errText });
     }
 
+    console.log('✅ Enviado correctamente a Discord');
     return res.status(200).json({ success: true });
 
   } catch (error) {
-    console.error('Error en /api/send:', error);
-    return res.status(500).json({ error: 'Error interno' });
+    console.error('❌ Error en /api/send:', error);
+    return res.status(500).json({ error: 'Error interno', mensaje: error.message });
   }
 }
